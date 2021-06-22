@@ -7,16 +7,14 @@ import scipy.special as ss
 import sys
 from IPython.display import display, Math
 
-   
-
-
 def log_prior(theta, threshold):
 
     mu , sd = theta
     
-    if -50.0 < mu < 50.0 and 0.01 < sd < 10.0:
+    if -50.0 < mu < 50.0 and 0.1 < sd < 10.0:
         return 0.0
     
+    #return 0.0
     return -np.inf
 
 ## likelihood of normal distribution
@@ -28,7 +26,7 @@ def log_selection_bias(theta, threshold):
     z = (threshold - mu) / sd / np.sqrt(2)
     integral = (1.0 - ss.erf(z) )/ 2
     ## extreme value of log function
-    if integral < 1e-200:
+    if integral <= 0:
         return -np.inf 
 
     return np.log(integral)
@@ -37,6 +35,7 @@ def log_lh(theta, x):
     
     mu, sd = theta
     N =  np.size(x) # number of observations
+    #print(sd)
     return - N / 2.0 * np.log(2.0 * np.pi) - N * np.log(sd) - np.sum( (x-mu)**2 ) / 2.0 / sd**2
     
 def pdf(x,mu,sd):
@@ -52,20 +51,20 @@ def log_lhWithError(theta, x):
     #print(x.shape)
     
     mu, sd = theta
-    norm = np.sqrt(2*np.pi) * sd
-    N =  np.size(x[:,0]) # number of obs
-    Ns = np.size(x[0,:]) # number of samples for single obs
+    norm = 1.0 / (np.sqrt(2*np.pi) * sd)
+    N =  np.size(x, axis = 0) # number of obs
+    Ns = np.size(x, axis = 1) # number of samples for single obs
 
-    p_obs = np.sum( pdf(x, mu, sd), axis = 1)             ### probability of a single obs 
+    p_obs = norm * np.sum( pdf(x, mu, sd), axis = 1)   / Ns           ### probability of a single obs 
     #print(p_obs.shape)
 
     if p_obs.all() <=0:
         return -np.inf
  
-    return - N * ( np.log(Ns * norm)) + np.sum( np.log(p_obs) )
+    return np.sum( np.log(p_obs) )
     
 
-def log_probability(theta, x, threshold, Error = False, Selec_Bias = False):
+def log_probability(theta,N, x, threshold, Error = False, Selec_Bias = False):
     lp = log_prior(theta, threshold)
 
 
@@ -73,8 +72,8 @@ def log_probability(theta, x, threshold, Error = False, Selec_Bias = False):
         return -1 * np.inf
     
     if Selec_Bias:
-        ls = -np.size(x) * log_selection_bias(theta, threshold)
-    
+        ls = -N  * log_selection_bias(theta, threshold)
+        #print('ls=',ls)
         if not np.isfinite(ls):
             return -1 * np.inf
     else:
@@ -84,14 +83,14 @@ def log_probability(theta, x, threshold, Error = False, Selec_Bias = False):
         llh = log_lhWithError(theta, x)
     else :
         llh = log_lh(theta, x)
-    
+
     if not np.isfinite(llh):
         return -np.inf
     
     return lp + ls + llh 
 
 ## extend data x to include measurement error samples 
-def x_samples_assemble(x, error_sd, Nsample_for_each_obs,trial_index,N,path):
+def x_samples_assemble(x, error_sd, Nsample_for_each_obs,trial_index, path):
 
     N = np.size(x) 
 
@@ -113,13 +112,15 @@ def x_samples_assemble(x, error_sd, Nsample_for_each_obs,trial_index,N,path):
     return x_extended
 
 def init_position(x,nwalkers,ndim):
-    #est_mu = np.sum(x) / np.size(x)
-    #est_sd = np.sum( (x - est_mu)**2  ) / np.size(x)
-    est_mu = 1 
-    est_sd = 0.2
+    N = np.size( x )
+    est_mu = np.sum(x) / N
+    est_sd = np.sum( (x - est_mu)**2  ) / N
+    #est_mu = 1 
+    #est_sd = 0.2
     pos =  np.zeros((nwalkers, ndim))   
-    pos[:,0] = np.random.rand(nwalkers)  + est_mu
+    pos[:,0] = np.random.rand(nwalkers) + est_mu
     pos[:,1] = np.random.rand(nwalkers)  + est_sd
+    #print(pos[:,1])
 
     return pos 
 
@@ -220,31 +221,80 @@ def outputPara(home, N, mu_true,sd_true, error_sd, Nsample_for_each_obs, thresho
     ###Output the parameters in the program 
     
     f = open(home + '/para.txt', 'w')
-    f.write('Population =' + str(N))
-    f.write('\nMean, SD =' + str(mu_true) + ', '+  str(sd_true) )
+    f.write('Population =%d' % (N))
+    f.write('\nMean=%.1f, SD = %.1f,' % (mu_true, sd_true) )
     if Error:
         f.write('\nError on each data: Yes ')
-        f.write('\nError SD for each data =' + str(error_sd))
-        f.write('\nNumber of samples for each data point =' + str(Nsample_for_each_obs))
+        f.write('\nError SD for each data = %.1f' % error_sd)
+        f.write('\nNumber of samples for each data point =%d' % Nsample_for_each_obs)
     else:
         f.write('\nError on each data: None ')
     if Selec_Bias:
 
         f.write('\nBias on obs data: Yes ')
-        f.write('\nThreshold for the obs data =' + str(threshold))
+        f.write('\nThreshold for the obs data =%.1f' % threshold)
 
     else:
         f.write('\nBias on obs data: None ')
     
-    f.write('\nNumber of walkers in para space =' + str(nwalkers))
-    f.write('\nNumber of burnt steps =' + str(burnt_step))
+    f.write('\nNumber of walkers in para space =%d' %nwalkers)
+    f.write('\nNumber of burnt steps =%d' % burnt_step)
     
-    f.write('\nNumber of trial for the run =' + str(trial))
+    f.write('\nNumber of trial for the run =%d' % trial)
     
     if wseed:
-        np.random.seed(7)
-        f.write('\nSeed of Rand Num =' + str(7))
+        #np.random.seed(7)
+        f.write('\nSeed of Rand Num =%d' %7)
     else:
         f.write('\nSeed of Rand Num =None')
 
     f.close()
+
+def pclor(mu_true, sd_true, error_sd, Nsample_for_each_obs, th, mu_low, mu_up, perr = False, psel = False):
+    np.random.seed(7)
+    threshold = mu_true + th * sd_true
+    x = np.random.normal(mu_true,sd_true,500)
+    #threshold = 0.3
+    if psel:
+        x = x[x > threshold]
+    N = np.size(x)
+    path = './a.png'
+    if perr:
+        trial_index = 1000
+        x = x_samples_assemble(x, error_sd, Nsample_for_each_obs,trial_index, path)
+
+    #theta = np.array([[0,1]]).reshape((2,1))
+    
+    mu = np.linspace(mu_low, mu_up,300)
+    sd = np.linspace(0.1, 10,300)
+    xx,yy = grid = np.meshgrid(mu,sd)
+
+    a = np.zeros((300,300))
+
+    for i in range(300):
+        for j in range(300):
+
+            a[i,j] = log_probability(np.array([xx[i,j],yy[i,j]]),N, x, threshold, Error = perr, Selec_Bias = psel)
+
+
+    index = np. unravel_index(a.argmax(), a.shape)
+    #print('hihihihh',index)
+    print('max log prob = ',log_probability(np.array([xx[index],yy[index]]),N, x, threshold, Error = perr, Selec_Bias = psel))
+    print('mu=',xx[index])
+    print('sd=',yy[index])
+    print('--------------------------------')
+    theta = np.array([mu_true,sd_true])
+    print('true para log prob = ',log_probability( theta, N, x, threshold, Error = perr, Selec_Bias = psel))
+    print('mu=',mu_true)
+    print('sd=',sd_true)
+    plt.imshow(-1/a / np.max(-1/a),extent=[mu_low, mu_up,10,0],aspect='auto')
+    plt.colorbar( label = 'Rescaled log probability')
+    plt.xlabel('$\mu$')
+    plt.ylabel('$\sigma$')
+    plt.show()
+    fig,ax=plt.subplots(1,1)
+    cp = ax.contourf(xx, yy, -1/ a / np.max(-1/a))
+    fig.colorbar(cp, label = 'Rescaled log probability')
+    plt.xlabel('$\mu$')
+    plt.ylabel('$\sigma$')
+    plt.show()

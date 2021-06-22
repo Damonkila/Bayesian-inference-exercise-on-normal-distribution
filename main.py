@@ -31,9 +31,13 @@ def main_p(N, mu_true, sd_true, error_sd, Nsample_for_each_obs, trial, th, err_s
     para_trial = np.zeros((2,trial,3))
 
     ##  Fix seed for random number ON/OFF 
+    if seed:
+        
+        np.random.seed(7)
+
     path, home = function.createPath(N, mu_true, sd_true, error_sd, Nsample_for_each_obs, threshold, Error = err_selec, Selec_Bias= bias_selec)
 
-    function.outputPara(home, N, mu_true,sd_true, error_sd, Nsample_for_each_obs, threshold, nwalkers, burnt_step, trial, Error = err_selec, Selec_Bias= bias_selec)
+    function.outputPara(home, N, mu_true,sd_true, error_sd, Nsample_for_each_obs, threshold, nwalkers, burnt_step, trial, Error = err_selec, Selec_Bias= bias_selec, wseed = seed)
 
     reader = open(home + '/para.txt', 'r').read()
     print(reader)
@@ -51,23 +55,22 @@ def main_p(N, mu_true, sd_true, error_sd, Nsample_for_each_obs, trial, th, err_s
     
         figpath = path[0] +'/' +'trial'+str(trial_index)+ '_'+str(N)  + 'hist_normal.png'
         function.plot_hist(N, x, figpath)
-    
+        
+        ############# Selection Bias on/off by bias_selec 
         if bias_selec:
             x = x[x > threshold]
+            figpath = path[0] +'/' +'trial'+str(trial_index)+ '_'+str(N)  + 'hist_bias.png'
+            function.plot_bias(N, x,figpath)
+            N = np.size(x)
 
         #### Generate samples after plug in obs error, and plot histogram, switch on/ off by err_selec
         if err_selec:
-            x = function.x_samples_assemble(x, error_sd, Nsample_for_each_obs,trial_index,N,path[0])
+            x = function.x_samples_assemble(x, error_sd, Nsample_for_each_obs,trial_index, path[0])
             
         ## generate initial position on parameter space
         pos = function.init_position(x,nwalkers,ndim)
-        ############# Selection Bias on/off by bias_selec 
-        if bias_selec:
-            figpath = path[0] +'/' +'trial'+str(trial_index)+ '_'+str(N)  + 'hist_bias.png'
-            function.plot_bias(N, x,figpath)
-            
-            
-        sampler = emcee.EnsembleSampler(nwalkers, ndim, function.log_probability, args = (x, threshold), kwargs = {'Error' : err_selec, 'Selec_Bias' : bias_selec})
+
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, function.log_probability, args = (N, x, threshold), kwargs = {'Error' : err_selec, 'Selec_Bias' : bias_selec})
 
         # progress = True , just show the progress bar 
         sampler.run_mcmc(pos, steps, progress=True)
@@ -88,7 +91,6 @@ def main_p(N, mu_true, sd_true, error_sd, Nsample_for_each_obs, trial, th, err_s
         labels = ["mean", "sd"]
         function.contour_plot(flat_samples,mu_true, sd_true, N, steps, trial_index, tau_trial[i],labels,path[2])
         
-
         for j in range(ndim):
             mcmc = np.percentile(flat_samples[:, j], [10, 50, 90])
             q = np.diff(mcmc)
@@ -107,7 +109,7 @@ def main_p(N, mu_true, sd_true, error_sd, Nsample_for_each_obs, trial, th, err_s
         np.savetxt(f, para_trial[i])
         f.close()
 
-        print('output of '+ para_name[i]+ ' is done')
+        #print('output of '+ para_name[i]+ ' is done')
 
     f = open(home + '/tau.txt','w')
 
