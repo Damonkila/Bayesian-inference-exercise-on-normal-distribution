@@ -4,25 +4,19 @@ import emcee
 import corner
 import os
 import scipy.special as ss
-import sys
 from IPython.display import display, Math
 
 def log_prior(theta, threshold):
 
     mu , sd = theta
-    
     if -50.0 < mu < 50.0 and 0.1 < sd < 10.0:
         return 0.0
     
-    #return 0.0
     return -np.inf
 
-## likelihood of normal distribution
 
-def log_selection_bias(theta, threshold):
+def log_SelectionBias(theta, threshold):
     mu, sd = theta
- 
-
     z = (threshold - mu) / sd / np.sqrt(2)
     integral = (1.0 - ss.erf(z) )/ 2
     ## extreme value of log function
@@ -31,82 +25,65 @@ def log_selection_bias(theta, threshold):
 
     return np.log(integral)
 
-def log_lh(theta, x):
+
+def log_likelihood(theta, x):
     
     mu, sd = theta
     N =  np.size(x) # number of observations
-    #print(sd)
     return - N / 2.0 * np.log(2.0 * np.pi) - N * np.log(sd) - np.sum( (x-mu)**2 ) / 2.0 / sd**2
-    
+
+## likelihood of normal distribution    
 def pdf(x,mu,sd):
-    
-    index = -0.5 * ( (x-mu) / sd )**2
-    
-    #norm = 1/ np.sqrt(2*np.pi) / sigma 
-    #return norm * np.exp(index)  
-    return np.exp(index)
-
-def log_lhWithError(theta, x):
-
-    #print(x.shape)
-    
-    mu, sd = theta
     norm = 1.0 / (np.sqrt(2*np.pi) * sd)
+    
+    return norm * np.exp( -0.5 * ( (x-mu) / sd )**2  )
+
+def log_likelihoodWithError(theta, x):
+    mu, sd = theta
     N =  np.size(x, axis = 0) # number of obs
     Ns = np.size(x, axis = 1) # number of samples for single obs
+    p_obs = np.sum( pdf(x, mu, sd), axis = 1)   / Ns           ### probability of a single obs 
 
-    p_obs = norm * np.sum( pdf(x, mu, sd), axis = 1)   / Ns           ### probability of a single obs 
-    #print(p_obs.shape)
-
-    if p_obs.all() <=0:
+    if p_obs.all() <= 0:
         return -np.inf
  
     return np.sum( np.log(p_obs) )
     
-
-def log_probability(theta,N, x, threshold, Error = False, Selec_Bias = False):
+def log_probability(theta, x, threshold, Error = False, Bias = False):
     lp = log_prior(theta, threshold)
-
 
     if not np.isfinite(lp):
         return -1 * np.inf
     
-    if Selec_Bias:
-        ls = -N  * log_selection_bias(theta, threshold)
-        #print('ls=',ls)
+    Ndet = np.size(x, axis= 0)
+    if Bias:
+        ls = - Ndet  * log_SelectionBias(theta, threshold)
+        
         if not np.isfinite(ls):
             return -1 * np.inf
     else:
         ls = 0
 
     if Error:
-        llh = log_lhWithError(theta, x)
+        llh = log_likelihoodWithError(theta, x)
     else :
-        llh = log_lh(theta, x)
+        llh = log_likelihood(theta, x)
 
     if not np.isfinite(llh):
         return -np.inf
     
     return lp + ls + llh 
 
+def BiasGenData(x, threshold):
+    
+    return x[x > threshold ]
 ## extend data x to include measurement error samples 
-def x_samples_assemble(x, error_sd, Nsample_for_each_obs,trial_index, path):
+def xErrorSampling(x, error_sd, Ns):
 
     N = np.size(x) 
-
-    x_extended = np.zeros((N, Nsample_for_each_obs))
-
+    x_extended = np.zeros((N, Ns))
     for i in range(N):
-        x_extended[i,:] = np.random.normal(x[i],error_sd, Nsample_for_each_obs)
-
-
-    path_hist_error  = path + '/sd_Nsample=' + str(error_sd) + '_' + str(Nsample_for_each_obs)
-            
-    if not os.path.exists(path_hist_error):
-        os.makedirs(path_hist_error)
-
-    figpath = path_hist_error +'/' +'trial'+str(trial_index)+ '_'+str(N)  + 'hist_witherror_after_mean.png'
-    plot_hist(N, x_extended.flatten(), figpath)
+        x_extended[i,:] = np.random.normal(x[i],error_sd, Ns)
 
 
     return x_extended
@@ -114,20 +91,37 @@ def x_samples_assemble(x, error_sd, Nsample_for_each_obs,trial_index, path):
 def init_position(x,nwalkers,ndim):
     N = np.size( x )
     est_mu = np.sum(x) / N
-    est_sd = np.sum( (x - est_mu)**2  ) / N
-    #est_mu = 1 
-    #est_sd = 0.2
+    est_sd = np.sqrt( np.sum( (x - est_mu)**2  ) / N )
     pos =  np.zeros((nwalkers, ndim))   
     pos[:,0] = np.random.rand(nwalkers) + est_mu
     pos[:,1] = np.random.rand(nwalkers)  + est_sd
-    #print(pos[:,1])
 
     return pos 
 
-def steps(ndim, trial_index, N, steps, samples,path):
-            
-    fig, axes = plt.subplots(ndim, figsize=(10, 7), sharex=True)
 
+def mcmc(x, nwalkers, ndim, threshold, steps, burnt_step, tau_trial, trial_index, Error = False, Bias  = False):
+    ## generate initial position on parameter space
+    pos = init_position(x,nwalkers,ndim)
+    #mcmc
+    sampler = emcee.EnsembleSampler(nwalkers, ndim, log_probability, args = (x, threshold), kwargs = {'Error' : Error, 'Bias' : Bias})
+    # progress = True , just show the progress bar 
+    sampler.run_mcmc(pos, steps, progress=True)
+    #  pos = (nwalkers,ndim); (:,0) = mu, (:,1) = sd
+    samples = sampler.get_chain()
+
+    ## flatten and burn in first x steps 
+    ## thin = 15 means only take 1 data every 15 steps
+    flat_samples = sampler.get_chain(discard = burnt_step, thin=15, flat=True)
+    i = trial_index - 1 
+    tau = sampler.get_autocorr_time()
+    print('autocorr_time for each parameters=',tau)
+    tau_trial[i] = tau.round(3)
+    
+    return samples, flat_samples
+    
+
+def ShowSteps(ndim, trial_index, samples, path): 
+    fig, axes = plt.subplots(ndim, figsize=(10, 7), sharex=True)
     labels = ["mean", "sd"]
     for j in range(ndim):
         # the loop is the same size with the array but is [0, size -1 ], use for index
@@ -140,75 +134,95 @@ def steps(ndim, trial_index, N, steps, samples,path):
 
     axes[-1].set_xlabel("step number")
 
-    figpath = path + '/' +'trial' + str(trial_index) +'_'+ str(N) + '_' + str(steps) + 'step.png'
+    figpath = path + '/' +'trial' + str(trial_index) + '_step.png'
     plt.tight_layout()
     plt.savefig(figpath)
     plt.show()
-    #plt.clf()
-    #plt.cla()
-def contour_plot(flat_samples,mu_true, sd_true, N, steps, trial_index, tau,labels, path):
-    ### Contour plot
     
+def ContourPlot(flat_samples, mu_true, sd_true, trial_index, path):
+    
+    ### Contour plot
+    labels = ["mean", "sd"]
     fig = corner.corner(
         flat_samples, labels=labels, truths=[mu_true, sd_true]
     )
 
-
-    figpath = path + '/' + 'trial'+str(trial_index)+'_'+ str(N) + '_' + str(steps)+'_'+ str(tau) + 'corr.png'
-    
+    figpath = path + '/' + 'trial'+str(trial_index) + '_corr.png'
     plt.tight_layout()
-    
     plt.savefig(figpath)
     plt.show()
+
+def SavePercentile(ndim, flat_samples, para_trial, trial_index):
+    i = trial_index - 1
+    labels = ["mean", "sd"]
+    for j in range(ndim):
+        mcmc = np.percentile(flat_samples[:, j], [10, 50, 90])
+        q = np.diff(mcmc)
+        para_trial[j,i,0] = mcmc[1]
+        para_trial[j,i,1] = q[0]
+        para_trial[j,i,2] =  q[1]
+        txt = "\mathrm{{{3}}} = {0:.3f}_{{-{1:.3f}}}^{{{2:.3f}}}"
+        txt = txt.format(mcmc[1], q[0], q[1], labels[j])
+        display(Math(txt))
+
+
+
+def SaveResult(ndim, tau_trial, para_trial, home):
     
-    #plt.clf()
-    #plt.cla()
+    para_name = ['mean', 'sd']
+    for i in range(ndim):   
+        f = open(home + '/'+ para_name[i] + '.txt','w')
+        np.savetxt(f, para_trial[i])
+        f.close()
+        #print('output of '+ para_name[i]+ ' is done')
+
+    f = open(home + '/tau.txt','w')
+    np.savetxt(f, tau_trial)
+    f.close()
 
 
+def PlotHist(xorigin, x, path, trial_index, Error = False, Bias = False):
+    fig, axs = plt.subplots(1, 2)
+    axs[0].hist(xorigin, bins = 50)
+    axs[0].set_title('x original histogram')
+    axs[1].hist(x, bins = 50)
+    name = 'x histogram'
+    if Error: 
+        name += ' Error'
+    if Bias:
+        name += ' Bias'
+    axs[1].set_title(name)
 
-def plot_hist(N, x, path):
-   
-    plt.title(str(N)+' observations histogram')
-    plt.ylabel('counts')
-    plt.xlabel('x')
-    histogram = plt.hist(x,bins=100)
+    for ax in axs.flat:
+        ax.set(xlabel='x', ylabel='counts')
+
+    # Hide x labels and tick labels for top plots and y ticks for right plots.
+    for ax in axs.flat:
+        ax.label_outer()
+
+
     plt.tight_layout()
-    plt.savefig(path)
-    plt.show()
-    #plt.clf()
-    #plt.cla()
-
-    
-def plot_bias(N, x, path):
-    plt.title(str(len(x))+'/'+str(N)+' observations histogram')
-    plt.ylabel('counts')
-    plt.xlabel('x')
-    plt.xlim(-np.max(x),np.max(x))
-    histogram = plt.hist(x,bins=100)
-    #figname = path2 +'/' +'trial'+str(trial_index)+ '_'+str(N)  + 'hist_normal.png'
-    plt.tight_layout()
-    plt.savefig(path)
+    figpath = path + '/' + 'trial'+str(trial_index)+ '_corr.png'
+    plt.savefig(figpath)
     plt.show()
 
-def createPath(N, mu_true, sd_true, error_sd, Nsample_for_each_obs, threshold,Error = False, Selec_Bias= False):
+
+def createPath(N, mu_true, sd_true, error_sd, Ns, threshold, Error = False, Bias= False):
     ########### Creating path and folders
-    home = './mu_sd=' +str(mu_true) + '_' + str(sd_true) + '/'
+    home = './mu_sd=' +str(mu_true) + '_' + str(sd_true) + '/' + str(N) + '/'
     
-    err_path = 'errSD_Nsample=' + str(error_sd) + '_' + str(Nsample_for_each_obs) + '/'
+    err_path = 'errSD_Nsample=' + str(error_sd) + '_' + str(Ns) + '/'
     bias_path = 'th=' + str(threshold) + '/'
-    
-
-    if Error and Selec_Bias:
-        home = home + 'hybird/' + err_path + bias_path + str(N)
+    if Error and Bias:
+        home = home + 'hybird/' + err_path + bias_path
 
     elif Error:
-        home = home + 'err/' + err_path + str(N)
+        home = home + 'err/' + err_path 
 
-    elif Selec_Bias:
-        home = home + 'bias/' +  bias_path + str(N)
+    elif Bias:
+        home = home + 'bias/' +  bias_path 
     else:
-        home = home + 'none/' + str(N)
-
+        home = home + 'none/' 
     path_folder = ['/hist', '/steps', '/corr']
     path = [home + string for string in path_folder] 
 
@@ -217,7 +231,7 @@ def createPath(N, mu_true, sd_true, error_sd, Nsample_for_each_obs, threshold,Er
             os.makedirs(path_x)
     return path,home
 
-def outputPara(home, N, mu_true,sd_true, error_sd, Nsample_for_each_obs, threshold, nwalkers, burnt_step, trial, Error = False, Selec_Bias= False, wseed = False):
+def outputPara(home, N, mu_true,sd_true, error_sd, Ns, threshold, nwalkers, burnt_step, trial, Error = False, Bias= False, Seed = False):
     ###Output the parameters in the program 
     
     f = open(home + '/para.txt', 'w')
@@ -226,10 +240,10 @@ def outputPara(home, N, mu_true,sd_true, error_sd, Nsample_for_each_obs, thresho
     if Error:
         f.write('\nError on each data: Yes ')
         f.write('\nError SD for each data = %.1f' % error_sd)
-        f.write('\nNumber of samples for each data point =%d' % Nsample_for_each_obs)
+        f.write('\nNumber of samples for each data point =%d' % Ns)
     else:
         f.write('\nError on each data: None ')
-    if Selec_Bias:
+    if Bias:
 
         f.write('\nBias on obs data: Yes ')
         f.write('\nThreshold for the obs data =%.1f' % threshold)
@@ -242,29 +256,27 @@ def outputPara(home, N, mu_true,sd_true, error_sd, Nsample_for_each_obs, thresho
     
     f.write('\nNumber of trial for the run =%d' % trial)
     
-    if wseed:
-        #np.random.seed(7)
+    if Seed:
+        f.write('\nFixed seed: Yes ')
         f.write('\nSeed of Rand Num =%d' %7)
     else:
-        f.write('\nSeed of Rand Num =None')
+        f.write('\nFixed seed =None')
 
     f.close()
 
-def pclor(mu_true, sd_true, error_sd, Nsample_for_each_obs, th, mu_low, mu_up, perr = False, psel = False):
-    np.random.seed(7)
+def pclor(mu_true, sd_true, error_sd, Ns, th, mu_low, mu_up, Error = False, Bias = False):
+    np.random.Seed(7)
     threshold = mu_true + th * sd_true
     x = np.random.normal(mu_true,sd_true,500)
     #threshold = 0.3
-    if psel:
+    if Bias:
         x = x[x > threshold]
     N = np.size(x)
     path = './a.png'
-    if perr:
+    if Error:
         trial_index = 1000
-        x = x_samples_assemble(x, error_sd, Nsample_for_each_obs,trial_index, path)
+        x = x_samples_assemble(x, error_sd, Ns,trial_index, path)
 
-    #theta = np.array([[0,1]]).reshape((2,1))
-    
     mu = np.linspace(mu_low, mu_up,300)
     sd = np.linspace(0.1, 10,300)
     xx,yy = grid = np.meshgrid(mu,sd)
@@ -274,17 +286,17 @@ def pclor(mu_true, sd_true, error_sd, Nsample_for_each_obs, th, mu_low, mu_up, p
     for i in range(300):
         for j in range(300):
 
-            a[i,j] = log_probability(np.array([xx[i,j],yy[i,j]]),N, x, threshold, Error = perr, Selec_Bias = psel)
+            a[i,j] = log_probability(np.array([xx[i,j],yy[i,j]]),N, x, threshold, Error = Error, Bias = Bias)
 
 
     index = np. unravel_index(a.argmax(), a.shape)
     #print('hihihihh',index)
-    print('max log prob = ',log_probability(np.array([xx[index],yy[index]]),N, x, threshold, Error = perr, Selec_Bias = psel))
+    print('max log prob = ',log_probability(np.array([xx[index],yy[index]]),N, x, threshold, Error = Error, Bias = Bias))
     print('mu=',xx[index])
     print('sd=',yy[index])
     print('--------------------------------')
     theta = np.array([mu_true,sd_true])
-    print('true para log prob = ',log_probability( theta, N, x, threshold, Error = perr, Selec_Bias = psel))
+    print('true para log prob = ',log_probability( theta, N, x, threshold, Error = perr, Bias = psel))
     print('mu=',mu_true)
     print('sd=',sd_true)
     plt.imshow(-1/a / np.max(-1/a),extent=[mu_low, mu_up,10,0],aspect='auto')
